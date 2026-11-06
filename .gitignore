@@ -1,0 +1,16 @@
+# Build output
+bin/
+obj/
+*.exe
+*.pdb
+
+# Bluetooth captures (can contain device addresses)
+*.pklg
+*.log
+*.cfa
+
+# Editor and OS files
+.vs/
+.vscode/
+Thumbs.db
+desktop.ini
