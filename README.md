@@ -21,6 +21,22 @@ Requirements: Windows 10/11, .NET Framework 4.7.2+, and the Windows SDK.
 
 Replace `08:F0:B0:1C:XX:XX` with the BLE address of your speaker (see below).
 
+After a successful read, the tool saves the address to `%APPDATA%\edifier-mp85-battery\address.txt`. On the next runs, you can omit the address:
+
+```powershell
+.\bin\edifier-mp85-battery.exe        # uses the saved address
+```
+
+To use a different speaker, give its address again. The tool replaces the saved address.
+
+If you give no address and there is no saved address, the tool scans for MP85 speakers for 10 seconds:
+
+- One speaker found: the tool uses it, saves its address, and shows the battery.
+- Two or more found: the tool lists their addresses and signal strengths. Run the tool again with the address you want.
+- None found: the tool shows an error.
+
+So on the first run, you usually do not need the address.
+
 Close the Edifier app on your phone first. The phone can hold the BLE link.
 
 The tool connects only to the exact BLE address. It does not match by name, because every MP85 advertises the same name ("EDIFIER MP85 BLE").

@@ -7,13 +7,18 @@
 //   Checksum: sum of all previous bytes, mod 256.
 //   Battery : cmd 0xD0, reply data = 1 byte, percent.
 //
-// Usage: edifier-mp85-battery.exe <BLE address, e.g. 08:F0:B0:1C:XX:XX> [-v]
+// Usage: edifier-mp85-battery.exe [BLE address, e.g. 08:F0:B0:1C:XX:XX] [-v]
+//
+// After a successful read, the tool saves the address to %APPDATA%\edifier-mp85-battery\address.txt.
+// If you do not give an address, the tool uses the saved address.
+// If there is no saved address, the tool scans for MP85 speakers and uses the speaker if it finds exactly one.
 //
 // The BLE address is the classic Bluetooth address with the 3rd byte B6 changed to B0
 // (seen on two MP85 units: 08:F0:B6:1C:XX:XX -> 08:F0:B0:1C:XX:XX).
 
 using System;
 using System.Collections.Concurrent;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Threading;
@@ -27,7 +32,11 @@ static class EdifierMp85Battery
     const string DeviceName = "EDIFIER MP85";
     const byte CmdBattery = 0xD0;
     const int ScanSeconds = 15;
+    const int DiscoverSeconds = 10;
     const int ReplySeconds = 5;
+
+    static readonly string AddressFile = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "edifier-mp85-battery", "address.txt");
 
     static bool verbose;
 
@@ -40,18 +49,15 @@ static class EdifierMp85Battery
             else address = a;
         }
 
-        if (address == null)
-        {
-            Console.Error.WriteLine("Usage: edifier-mp85-battery.exe <BLE address> [-v]");
-            Console.Error.WriteLine("Example: edifier-mp85-battery.exe 08:F0:B0:1C:XX:XX");
-            return 2;
-        }
+        if (address == null) address = LoadAddress();
 
         try
         {
-            using (BluetoothLEDevice device = Connect(ParseAddress(address)))
+            ulong parsed = address != null ? ParseAddress(address) : Discover();
+            using (BluetoothLEDevice device = Connect(parsed))
             {
                 int battery = ReadBattery(device);
+                SaveAddress(parsed);
                 Console.WriteLine("{0}: battery {1}%", device.Name, battery);
             }
             return 0;
@@ -60,6 +66,33 @@ static class EdifierMp85Battery
         {
             Console.Error.WriteLine("Error: " + ex.Message);
             return 1;
+        }
+    }
+
+    // --- Saved address -------------------------------------------------------
+
+    static string LoadAddress()
+    {
+        if (!File.Exists(AddressFile)) return null;
+        string text = File.ReadAllText(AddressFile).Trim();
+        if (text.Length == 0) return null;
+        Log("Using saved address " + text + " from " + AddressFile);
+        return text;
+    }
+
+    // Save only after a successful read, so that a wrong address is never saved.
+    static void SaveAddress(ulong address)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(AddressFile));
+            File.WriteAllText(AddressFile, FormatAddress(address) + Environment.NewLine);
+            Log("Saved address to " + AddressFile);
+        }
+        catch (Exception ex)
+        {
+            // Do not fail the battery read because of the file.
+            Console.Error.WriteLine("Warning: cannot save the address: " + ex.Message);
         }
     }
 
@@ -75,6 +108,39 @@ static class EdifierMp85Battery
         device = BluetoothLEDevice.FromBluetoothAddressAsync(found).AsTask().Result;
         if (device == null) throw new Exception("Cannot open the BLE device.");
         return device;
+    }
+
+    // Find the speaker when no address is given and none is saved.
+    // Every MP85 advertises the same name, so accept the result only if exactly one speaker is found.
+    // Scan for the full time, so that a second speaker is not missed.
+    static ulong Discover()
+    {
+        Console.WriteLine("No address given or saved. Scanning for {0} speakers ({1} s)...", DeviceName, DiscoverSeconds);
+        var found = new ConcurrentDictionary<ulong, short>();
+        var watcher = new BluetoothLEAdvertisementWatcher { ScanningMode = BluetoothLEScanningMode.Active };
+        watcher.Received += (w, e) =>
+        {
+            string name = e.Advertisement.LocalName ?? "";
+            Log(string.Format("ADV {0} \"{1}\" {2} dBm", FormatAddress(e.BluetoothAddress), name, e.RawSignalStrengthInDBm));
+            if (name.StartsWith(DeviceName, StringComparison.OrdinalIgnoreCase) || e.Advertisement.ServiceUuids.Contains(ServiceUuid))
+                found[e.BluetoothAddress] = e.RawSignalStrengthInDBm;
+        };
+        watcher.Start();
+        Thread.Sleep(TimeSpan.FromSeconds(DiscoverSeconds));
+        watcher.Stop();
+
+        if (found.Count == 0)
+            throw new Exception("No " + DeviceName + " found. Turn on the speaker, close the Edifier app on your phone (it holds the BLE link), and try again.");
+        if (found.Count > 1)
+        {
+            string list = string.Join(Environment.NewLine, found.OrderByDescending(p => p.Value)
+                .Select(p => string.Format("  {0}  {1} dBm", FormatAddress(p.Key), p.Value)));
+            throw new Exception("Found " + found.Count + " speakers. Run again with the address you want:" + Environment.NewLine + list);
+        }
+
+        ulong address = found.Keys.First();
+        Console.WriteLine("Found speaker at " + FormatAddress(address));
+        return address;
     }
 
     // Find the speaker by its exact BLE address.
